@@ -1,0 +1,188 @@
+import time
+import board
+import busio
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+import math
+import serial
+from datetime import datetime
+
+>>\\These libraries and modules are commonly used for reading sensor data, performing calculations, communicating with other devices, and handling time in a project involving a microcontroller or development board.
+
+i2c = busio.I2C(board.SCL, board.SDA)
+>>\\board.SCL and board.SDA are the pins used for this communication
+ads = ADS.ADS1115(i2c)
+>>\\The ADS1115 is an Analog-to-Digital Converter (ADC), which means it takes analog signals (like those from sensors) and converts them to digital values that the computer can understand.
+
+analog_in = AnalogIn(ads, ADS.P0)
+>>\\This line sets up reading from one of the ADS1115’s input channels (P0).
+channel = AnalogIn(ads, ADS.P1)
+>>\\This line sets up reading from another input channel on the ADS1115 (P1).
+ser = serial.Serial('/dev/ttyS0', 9600, timeout=1)
+>>\\'/dev/ttyS0' is the port being used for the serial connection (like a specific USB or serial port on your device).
+9600 is the baud rate, which is the speed of communication.
+timeout=1 means the program will wait up to 1 second for a response before giving up.
+
+
+
+>>\\In summary, these lines set up communication with an ADC (to read analog signals) and a serial port (to communicate with other devices).
+
+# Function to calculate the checksum
+def calculate_checksum(data):
+    checksum = 0
+    for byte in data[1:-1]:
+        checksum += byte
+>>\\ checksum += byte => checksum = checksum + byte
+    checksum = ((-checksum) + 1) & 0xFF
+    return checksum
+
+>>\\This function calculates a "checksum" to help check if data has been received correctly. It skips the first and last pieces of the data, adds up the rest, and does some math to create a final value that helps verify the data's integrity.
+
+
+
+
+Skipping the first and last values ensures that only the relevant data bytes are used for the checksum calculation, adhering to the structure and integrity rules of the specific communication protocol or data format.
+
+
+
+# Function to send a command and receive the response
+def send_command(command):
+    ser.write(command)
+    time.sleep(1)  # Wait for the response
+    response = ser.read(9)  # Read 9 bytes (response Length)
+    return response
+>>//>>//The send_command function sends a command to a device, waits for a moment to let the device respond, reads the reply (9 bytes long), and then returns this reply.
+
+
+# Function to switch Initiative upload mode
+def switch_to_initiative_upload_mode():
+    command = bytearray([0xFF, 0x01, 0x78, 0x40, 0x00, 0x00, 0x00, 0x00, 0x47])
+    ser.write(command)
+
+>>\\The switch_to_initiative_upload_mode function creates a special set of instructions (a command) and sends it to a device to switch it into "initiative upload mode." This function essentially tells the device to change its operation mode to start uploading data
+
+
+
+
+# Function switch to question & answer mode
+def switch_to_qa_mode():
+    command = bytearray([0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46])
+    ser.write(command)
+
+>>\\The switch_to_qa_mode function creates a command composed of specific bytes (in hexadecimal format) and sends it to a device over a serial connection. This command instructs the device to switch its operational mode to "QA mode". This mode switch might involve changing how the device behaves or what kind of data it processes or outputs.
+
+    Testing & Debugging device's functionality,
+
+
+
+# Function to send a question command
+def send_question_command():
+    command = bytearray([0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79])
+    response = send_command(command)
+    return response
+
+>>\\This function is used to request information 
+
+
+# Function to parse the sensor response in Initiative upload mode
+def parse_initiative_upload_response(response):
+    gas_type = response[1]
+    unit = response[2]
+    decimal = response[3]
+    concentration = (response[4] << 8) + response[5]
+    full_range = (response[6] << 8) + response[7]
+    checksum = response[8]
+
+>>\\function extracts specific pieces of information (like gas type, unit of measurement, concentration, and full range) from a response received after sending a command to a device
+
+    # Verify checksum
+    if calculate_checksum(response) == checksum:
+        concentration /= 10.0
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ze07: {concentration} ")
+    else:
+        print("Checksum error in the response")
+
+
+>>\\verifies the integrity of the data received (response) by comparing its checksum with a calculated checksum (calculate_checksum(response)). If they match, it adjusts the concentration value and prints it with a timestamp. If they don't match, it indicates a checksum error.
+
+
+
+def read_mq136():
+    # Read the raw ADC value
+    raw_value = analog_in.value
+
+    # Convert the raw ADC value to voltage
+    voltage = (raw_value / 32767) * 4.096
+
+    # The following equation is specific to the MQ136 sensor to convert voltage to PPM
+    # You may need to adjust these values based on the sensor datasheet
+    Rs_Ro_Ratio = (5.0 - voltage) / voltage
+    ppm = 10 ** ((Rs_Ro_Ratio - 1.526) / -0.362)
+    return ppm
+
+>>\\The read_mq136() function reads an analog voltage value from an MQ136 gas sensor through an ADC, calculates the Rs/Ro ratio based on this voltage, and then converts this ratio into parts per million (PPM) of gas concentration using a specific mathematical formula. Adjustments to constants might be necessary based on the MQ136 sensor’s datasheet and environmental conditions
+
+
+def convert_to_ppm(voltage, formula_params):
+    # Check if voltage is within the specified range
+    max_voltage = 5.1  # Considering 5V +0.1V
+    min_voltage = 0.0  # Assuming the sensor output can go down to 0V
+
+    if voltage < min_voltage or voltage > max_voltage:
+        print(f"Warning: Voltage ({voltage:.2f}V) outside specified range ({min_voltage:.2f}V- {max_voltage:.2f}V)")
+
+    # Implement specific conversion formula based on the provided parameters
+    log_ppm = formula_params[0] + formula_params[1] * voltage + formula_params[2] * voltage ** 2
+
+    # Apply the antilog to get ppm
+    ppm = 10 ** log_ppm
+
+    # Apply error percentage
+    error_percentage = 7.0
+    ppm_with_error = ppm + (ppm * error_percentage / 100)
+    return ppm_with_error
+
+
+def read_sensor():
+    # Read the raw ADC value
+    raw_value = channel.value
+
+    # Convert the raw ADC value to Voltage
+    voltage = (raw_value / 32767) * 5.1  # Assuming full-scale range of 5.1V
+    return voltage
+
+
+def main():
+    try:
+        switch_to_initiative_upload_mode()
+        while True:
+            response = ser.read(9)  # Read 9 bytes (response length)
+            if len(response) == 9 and response[0] == 0XFF:
+                parse_initiative_upload_response(response)
+
+            gas_ppm = read_mq136()
+            sensor_voltage = read_sensor()
+
+            # Formaldehyde conversion formula parameters
+            formaldehyde_params = [-1.095, 0.627, -0.125]
+
+            # Toluene conversion formula parameters
+            toluene_params = [-3.478, 1.104, -0.210]
+
+            # Convert voltage to PPM using the appropriate conversion function
+            formaldehyde_ppm = convert_to_ppm(sensor_voltage, formaldehyde_params)
+            toluene_ppm = convert_to_ppm(sensor_voltage, toluene_params)
+
+            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - MS1100: {formaldehyde_ppm:.2f}")
+            print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - MQ136: {toluene_ppm:.2f}")
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("Program terminated by user")
+    finally:
+        ser.close()
+
+
+if __name__ == "__main__":
+    main()
